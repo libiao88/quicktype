@@ -2,7 +2,7 @@ import { setFilter, setUnion, iterableFirst, mapMapEntries } from "collection-ut
 
 import { TypeGraph, TypeRef, typeRefIndex } from "./TypeGraph";
 import { TargetLanguage } from "./TargetLanguage";
-import { UnionType, TypeKind, EnumType, Type, PrimitiveType } from "./Type";
+import { UnionType, TypeKind, EnumType, Type, ArrayType, PrimitiveType } from "./Type";
 import { GraphRewriteBuilder } from "./GraphRewriting";
 import { defined, assert, panic } from "./support/Support";
 import {
@@ -236,6 +236,11 @@ export function makeTransformations(ctx: RunContext, graph: TypeGraph, targetLan
         if (t instanceof UnionType) {
             return replaceUnion(t, builder, forwardingRef, ctx.debugPrintTransformations);
         }
+        /*
+        if (t instanceof ArrayType) {
+            return replaceArray(t, builder, forwardingRef, ctx.debugPrintReconstitution);
+        }
+        */
         if (t instanceof EnumType) {
             return replaceEnum(t, builder, forwardingRef, ctx.debugPrintTransformations);
         }
@@ -250,11 +255,15 @@ export function makeTransformations(ctx: RunContext, graph: TypeGraph, targetLan
         allTypesUnordered,
         t => t instanceof UnionType && targetLanguage.needsTransformerForUnion(t)
     );
+    const arrays = setFilter(
+        allTypesUnordered,
+        t => t instanceof ArrayType && targetLanguage.needTransformerForArray(t)
+    );
     const enums = targetLanguage.needsTransformerForEnums
         ? setFilter(allTypesUnordered, t => t instanceof EnumType)
         : new Set();
     const integerStrings = setFilter(allTypesUnordered, t => t.kind === "integer-string");
-    const groups = Array.from(setUnion(unions, enums, integerStrings)).map(t => [t]);
+    const groups = Array.from(setUnion(unions, arrays, enums, integerStrings)).map(t => [t]);
     return graph.rewrite(
         "make-transformations",
         ctx.stringTypeMapping,

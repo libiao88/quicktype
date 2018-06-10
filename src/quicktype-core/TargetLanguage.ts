@@ -7,7 +7,7 @@ import { serializeRenderResult, SerializedRenderResult } from "./Source";
 import { StringTypeMapping } from "./TypeBuilder";
 import { defined } from "./support/Support";
 import { ConvenienceRenderer } from "./ConvenienceRenderer";
-import { UnionType } from "./Type";
+import { UnionType, ArrayType } from "./Type";
 
 export abstract class TargetLanguage {
     constructor(readonly displayName: string, readonly names: string[], readonly extension: string) {}
@@ -86,6 +86,10 @@ export abstract class TargetLanguage {
     }
 
     needsTransformerForUnion(_u: UnionType): boolean {
+        return false;
+    }
+
+    needTransformerForArray(_a: ArrayType): boolean {
         return false;
     }
 

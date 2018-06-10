@@ -1,6 +1,6 @@
 import { arrayIntercalate } from "collection-utils";
 
-import { Type, EnumType, UnionType, ClassType, ClassProperty } from "../Type";
+import { Type, EnumType, UnionType, ClassType, ClassProperty, ArrayType } from "../Type";
 import { matchType, nullableFromUnion, removeNullFromUnion, directlyReachableSingleNamedType } from "../TypeUtils";
 import { Sourcelike, maybeAnnotated, modifySource } from "../Source";
 import {
@@ -112,6 +112,15 @@ export class CSharpTargetLanguage extends TargetLanguage {
 
     needsTransformerForUnion(u: UnionType): boolean {
         return needTransformerForUnion(u);
+    }
+
+    needTransformerForArray(_a: ArrayType): boolean {
+        /*
+        const t = a.items;
+        if (transformationForType(t) !== undefined) return true;
+        if (t instanceof ArrayType) return this.needTransformerForArray(t);
+        */
+        return false;
     }
 
     get needsTransformerForEnums(): boolean {
