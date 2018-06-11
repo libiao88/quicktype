@@ -16,7 +16,8 @@ import {
     Transformer,
     DecodingTransformer,
     ParseDateTimeTransformer,
-    ParseIntegerTransformer
+    ParseIntegerTransformer,
+    ArrayDecodingTransformer
 } from "./Transformers";
 import { TypeAttributes, emptyTypeAttributes } from "./TypeAttributes";
 import { StringTypes } from "./StringTypes";
@@ -183,6 +184,38 @@ function replaceUnion(
     return builder.getPrimitiveType("any", attributes, forwardingRef);
 }
 
+function replaceArray(
+    arrayType: ArrayType,
+    builder: GraphRewriteBuilder<Type>,
+    forwardingRef: TypeRef,
+    debugPrintTransformations: boolean
+): TypeRef {
+    const anyType = builder.getPrimitiveType("any");
+    const anyArrayType = builder.getArrayType(anyType);
+    const reconstitutedItems = builder.reconstituteType(arrayType.items);
+    const transformer = new ArrayDecodingTransformer(
+        builder.typeGraph,
+        anyArrayType,
+        undefined,
+        reconstitutedItems,
+        new DecodingTransformer(builder.typeGraph, anyType, undefined)
+    );
+
+    const reconstitutedArray = builder.getArrayType(reconstitutedItems);
+    builder.addAttributes(reconstitutedArray, builder.reconstituteTypeAttributes(arrayType.getAttributes()));
+
+    const attributes = transformationAttributes(
+        builder.typeGraph,
+        reconstitutedArray,
+        transformer,
+        debugPrintTransformations
+    );
+
+    const result = builder.getArrayType(anyType, forwardingRef);
+    builder.addAttributes(result, attributes);
+    return result;
+}
+
 function replaceEnum(
     enumType: EnumType,
     builder: GraphRewriteBuilder<Type>,
@@ -236,11 +269,9 @@ export function makeTransformations(ctx: RunContext, graph: TypeGraph, targetLan
         if (t instanceof UnionType) {
             return replaceUnion(t, builder, forwardingRef, ctx.debugPrintTransformations);
         }
-        /*
         if (t instanceof ArrayType) {
             return replaceArray(t, builder, forwardingRef, ctx.debugPrintReconstitution);
         }
-        */
         if (t instanceof EnumType) {
             return replaceEnum(t, builder, forwardingRef, ctx.debugPrintTransformations);
         }

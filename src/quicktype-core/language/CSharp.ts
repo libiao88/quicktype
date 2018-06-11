@@ -34,7 +34,8 @@ import {
     StringifyDateTimeTransformer,
     ParseIntegerTransformer,
     StringifyIntegerTransformer,
-    Transformation
+    Transformation,
+    ArrayDecodingTransformer
 } from "../Transformers";
 import { RenderContext } from "../Renderer";
 
@@ -114,13 +115,8 @@ export class CSharpTargetLanguage extends TargetLanguage {
         return needTransformerForUnion(u);
     }
 
-    needTransformerForArray(_a: ArrayType): boolean {
-        /*
-        const t = a.items;
-        if (transformationForType(t) !== undefined) return true;
-        if (t instanceof ArrayType) return this.needTransformerForArray(t);
-        */
-        return false;
+    needTransformerForArray(a: ArrayType): boolean {
+        return transformationForType(a.items) !== undefined;
     }
 
     get needsTransformerForEnums(): boolean {
@@ -858,7 +854,8 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
         tokenCases: string[],
         variableName: string,
         xfer: Transformer | undefined,
-        targetType: Type
+        targetType: Type,
+        emitFinish: (value: Sourcelike) => void
     ): void {
         if (xfer === undefined) return;
 
@@ -866,51 +863,104 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
             this.emitTokenCase(tokenCase);
         }
         this.indent(() => {
-            const allHandled = this.emitDecodeTransformer(xfer, targetType, variableName);
+            const allHandled = this.emitDecodeTransformer(xfer, targetType, emitFinish, variableName);
             if (!allHandled) {
                 this.emitLine("break;");
             }
         });
     }
 
-    private emitConsume(value: Sourcelike, consumer: Transformer | undefined, targetType: Type): boolean {
+    private emitConsume(
+        value: Sourcelike,
+        consumer: Transformer | undefined,
+        targetType: Type,
+        emitFinish: (variableName: Sourcelike) => void
+    ): boolean {
         if (consumer === undefined) {
-            this.emitLine("return ", value, ";");
+            emitFinish(value);
             return true;
         } else {
-            return this.emitTransformer(value, consumer, targetType);
+            return this.emitTransformer(value, consumer, targetType, emitFinish);
         }
     }
 
-    private emitDecodeTransformer(xfer: Transformer, targetType: Type, variableName: string = "value"): boolean {
+    private emitDecodeTransformer(
+        xfer: Transformer,
+        targetType: Type,
+        emitFinish: (value: Sourcelike) => void,
+        variableName: string = "value"
+    ): boolean {
         if (xfer instanceof DecodingTransformer) {
             if (xfer.sourceType.kind !== "null") {
                 this.emitLine("var ", variableName, " = ", this.deserializeTypeCode(this.csType(xfer.sourceType)), ";");
             }
-            return this.emitConsume(variableName, xfer.consumer, targetType);
+            return this.emitConsume(variableName, xfer.consumer, targetType, emitFinish);
+        } else if (xfer instanceof ArrayDecodingTransformer) {
+            this.emitLine("var ", variableName, " = new ", this.csType(targetType), " {};");
+            this.emitLine("while (reader.TokenType != JsonToken.EndArray)");
+            this.emitBlock(() => {
+                this.emitDecodeTransformer(
+                    xfer.itemTransformer,
+                    xfer.itemTargetType,
+                    v => this.emitLine(variableName, ".append(", v, ");"),
+                    "arrayItem"
+                );
+            });
+            this.emitLine("return ", variableName, ";");
+            return true;
         } else if (xfer instanceof DecodingChoiceTransformer) {
             this.emitDecoderSwitch(() => {
                 const nullTransformer = xfer.nullTransformer;
                 if (nullTransformer !== undefined) {
                     this.emitTokenCase("Null");
                     this.indent(() => {
-                        const allHandled = this.emitDecodeTransformer(nullTransformer, targetType, "nullValue");
+                        const allHandled = this.emitDecodeTransformer(
+                            nullTransformer,
+                            targetType,
+                            emitFinish,
+                            "nullValue"
+                        );
                         if (!allHandled) {
                             this.emitLine("break");
                         }
                     });
                 }
-                this.emitDecoderTransformerCase(["Integer"], "integerValue", xfer.integerTransformer, targetType);
+                this.emitDecoderTransformerCase(
+                    ["Integer"],
+                    "integerValue",
+                    xfer.integerTransformer,
+                    targetType,
+                    emitFinish
+                );
                 this.emitDecoderTransformerCase(
                     xfer.integerTransformer === undefined ? ["Integer", "Float"] : ["Float"],
                     "doubleValue",
                     xfer.doubleTransformer,
-                    targetType
+                    targetType,
+                    emitFinish
                 );
-                this.emitDecoderTransformerCase(["Boolean"], "boolValue", xfer.boolTransformer, targetType);
-                this.emitDecoderTransformerCase(["String", "Date"], "stringValue", xfer.stringTransformer, targetType);
-                this.emitDecoderTransformerCase(["StartObject"], "objectValue", xfer.objectTransformer, targetType);
-                this.emitDecoderTransformerCase(["StartArray"], "arrayValue", xfer.arrayTransformer, targetType);
+                this.emitDecoderTransformerCase(["Boolean"], "boolValue", xfer.boolTransformer, targetType, emitFinish);
+                this.emitDecoderTransformerCase(
+                    ["String", "Date"],
+                    "stringValue",
+                    xfer.stringTransformer,
+                    targetType,
+                    emitFinish
+                );
+                this.emitDecoderTransformerCase(
+                    ["StartObject"],
+                    "objectValue",
+                    xfer.objectTransformer,
+                    targetType,
+                    emitFinish
+                );
+                this.emitDecoderTransformerCase(
+                    ["StartArray"],
+                    "arrayValue",
+                    xfer.arrayTransformer,
+                    targetType,
+                    emitFinish
+                );
             });
             return false;
         } else {
@@ -927,7 +977,12 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
         return panic(`Type ${t.kind} does not have string cases`);
     }
 
-    private emitTransformer(variable: Sourcelike, xfer: Transformer, targetType: Type): boolean {
+    private emitTransformer(
+        variable: Sourcelike,
+        xfer: Transformer,
+        targetType: Type,
+        emitFinish: (value: Sourcelike) => void
+    ): boolean {
         function directTargetType(continuation: Transformer | undefined): Type {
             if (continuation === undefined) {
                 return targetType;
@@ -948,7 +1003,12 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
                         );
                         this.emitLine("case ", value, ":");
                         this.indent(() => {
-                            const allDone = this.emitTransformer(variable, matchXfer.transformer, targetType);
+                            const allDone = this.emitTransformer(
+                                variable,
+                                matchXfer.transformer,
+                                targetType,
+                                emitFinish
+                            );
                             if (!allDone) {
                                 this.emitLine("break;");
                             }
@@ -959,7 +1019,7 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
                 return false;
             } else {
                 for (const caseXfer of caseXfers) {
-                    this.emitTransformer(variable, caseXfer, targetType);
+                    this.emitTransformer(variable, caseXfer, targetType, emitFinish);
                 }
             }
         } else if (xfer instanceof UnionMemberMatchTransformer) {
@@ -977,33 +1037,34 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
                 }
             }
             this.emitLine("if (", test, ")");
-            this.emitBlock(() => this.emitTransformer(member, xfer.transformer, targetType));
+            this.emitBlock(() => this.emitTransformer(member, xfer.transformer, targetType, emitFinish));
         } else if (xfer instanceof StringMatchTransformer) {
             const value = this.stringCaseValue(followTargetType(xfer.sourceType), xfer.stringCase);
             this.emitLine("if (", variable, " == ", value, ")");
-            this.emitBlock(() => this.emitTransformer(variable, xfer.transformer, targetType));
+            this.emitBlock(() => this.emitTransformer(variable, xfer.transformer, targetType, emitFinish));
         } else if (xfer instanceof EncodingTransformer) {
             this.emitLine(this.serializeValueCode(variable), "; return;");
             return true;
         } else if (xfer instanceof ParseDateTimeTransformer) {
             this.emitLine("DateTimeOffset dt;");
             this.emitLine("if (DateTimeOffset.TryParse(", variable, ", out dt))");
-            this.emitBlock(() => this.emitConsume("dt", xfer.consumer, targetType));
+            this.emitBlock(() => this.emitConsume("dt", xfer.consumer, targetType, emitFinish));
         } else if (xfer instanceof StringifyDateTimeTransformer) {
             return this.emitConsume(
                 [variable, '.ToString("o", System.Globalization.CultureInfo.InvariantCulture)'],
                 xfer.consumer,
-                targetType
+                targetType,
+                emitFinish
             );
         } else if (xfer instanceof ParseIntegerTransformer) {
             this.emitLine("long l;");
             this.emitLine("if (Int64.TryParse(", variable, ", out l))");
-            this.emitBlock(() => this.emitConsume("l", xfer.consumer, targetType));
+            this.emitBlock(() => this.emitConsume("l", xfer.consumer, targetType, emitFinish));
         } else if (xfer instanceof StringifyIntegerTransformer) {
-            return this.emitConsume([variable, ".ToString()"], xfer.consumer, targetType);
+            return this.emitConsume([variable, ".ToString()"], xfer.consumer, targetType, emitFinish);
         } else if (xfer instanceof StringProducerTransformer) {
             const value = this.stringCaseValue(directTargetType(xfer.consumer), xfer.result);
-            return this.emitConsume(value, xfer.consumer, targetType);
+            return this.emitConsume(value, xfer.consumer, targetType, emitFinish);
         } else if (xfer instanceof UnionInstantiationTransformer) {
             if (!(targetType instanceof UnionType)) {
                 return panic("Union instantiation transformer must produce a union type");
@@ -1025,6 +1086,8 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
     }
 
     private emitTransformation(converterName: Name, t: Type): void {
+        const emitReturn = (v: Sourcelike) => this.emitLine("return ", v, ";");
+
         const xf = defined(transformationForType(t));
         const reverse = xf.reverse;
         const targetType = xf.targetType;
@@ -1034,7 +1097,7 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
             this.emitCanConvert(["t == typeof(", csType, ") || t == typeof(", csType, "?)"]);
             this.ensureBlankLine();
             this.emitReadJson(() => {
-                const allHandled = this.emitDecodeTransformer(xfer, targetType);
+                const allHandled = this.emitDecodeTransformer(xfer, targetType, emitReturn);
                 // FIXME: It's unsatisfying that we need this.  The reason is that we not
                 // only match T, but also T?.  If we didn't, then the T in T? would not be
                 // deserialized with our converter but with the default one.  Can we check
@@ -1049,7 +1112,7 @@ export class NewtonsoftCSharpRenderer extends CSharpRenderer {
             this.ensureBlankLine();
             this.emitWriteJson("untypedValue", () => {
                 this.emitLine("var value = (", csType, ")untypedValue;");
-                const allHandled = this.emitTransformer("value", reverse.transformer, reverse.targetType);
+                const allHandled = this.emitTransformer("value", reverse.transformer, reverse.targetType, emitReturn);
                 if (!allHandled) {
                     this.emitThrow(['"Cannot marshal type ', csType, '"']);
                 }

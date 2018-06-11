@@ -137,7 +137,7 @@ export class DecodingTransformer extends ProducerTransformer {
 
     equals(other: any): boolean {
         if (!super.equals(other)) return false;
-        return other instanceof StringProducerTransformer;
+        return other instanceof DecodingTransformer;
     }
 }
 
@@ -158,6 +158,91 @@ export class EncodingTransformer extends Transformer {
         if (!super.equals(other)) return false;
         if (!(other instanceof EncodingTransformer)) return false;
         return true;
+    }
+}
+
+export class ArrayDecodingTransformer extends ProducerTransformer {
+    constructor(
+        graph: TypeGraph,
+        sourceTypeRef: TypeRef,
+        consumer: Transformer | undefined,
+        private readonly _itemTargetTypeRef: TypeRef,
+        readonly itemTransformer: Transformer
+    ) {
+        super("decode-array", graph, sourceTypeRef, consumer);
+    }
+
+    get itemTargetType(): Type {
+        return derefTypeRef(this._itemTargetTypeRef, this.graph);
+    }
+
+    reverse(targetTypeRef: TypeRef, continuationTransformer: Transformer | undefined): Transformer {
+        if (continuationTransformer !== undefined) {
+            return panic("Reversing a decoding transformer cannot have a continuation");
+        }
+
+        const itemTransformer = this.itemTransformer.reverse(this._itemTargetTypeRef, undefined);
+
+        if (this.consumer === undefined) {
+            return new ArrayEncodingTransformer(this.graph, targetTypeRef, itemTransformer);
+        } else {
+            return this.consumer.reverse(
+                targetTypeRef,
+                new ArrayEncodingTransformer(this.graph, this.consumer.sourceTypeRef, itemTransformer)
+            );
+        }
+    }
+
+    reconstitute<TBuilder extends BaseGraphRewriteBuilder>(builder: TBuilder): Transformer {
+        return new ArrayDecodingTransformer(
+            builder.typeGraph,
+            builder.reconstituteTypeRef(this.sourceTypeRef),
+            definedMap(this.consumer, xfer => xfer.reconstitute(builder)),
+            builder.reconstituteTypeRef(this._itemTargetTypeRef),
+            this.itemTransformer.reconstitute(builder)
+        );
+    }
+
+    hashCode(): number {
+        let h = super.hashCode();
+        h = addHashCode(h, hashCodeOf(this._itemTargetTypeRef));
+        h = addHashCode(h, this.itemTransformer.hashCode());
+        return h;
+    }
+
+    equals(other: any): boolean {
+        if (!super.equals(other)) return false;
+        if (!(other instanceof ArrayDecodingTransformer)) return false;
+        return this.itemTransformer.equals(other.itemTransformer);
+    }
+}
+
+export class ArrayEncodingTransformer extends Transformer {
+    constructor(graph: TypeGraph, sourceTypeRef: TypeRef, readonly itemTransformer: Transformer) {
+        super("encode-array", graph, sourceTypeRef);
+    }
+
+    reverse(_targetTypeRef: TypeRef, _continuationTransformer: Transformer | undefined): Transformer {
+        return panic("Can't reverse array encoding transformer");
+    }
+
+    reconstitute<TBuilder extends BaseGraphRewriteBuilder>(builder: TBuilder): Transformer {
+        return new ArrayEncodingTransformer(
+            builder.typeGraph,
+            builder.reconstituteTypeRef(this.sourceTypeRef),
+            this.itemTransformer.reconstitute(builder)
+        );
+    }
+
+    hashCode(): number {
+        const h = super.hashCode();
+        return addHashCode(h, this.itemTransformer.hashCode());
+    }
+
+    equals(other: any): boolean {
+        if (!super.equals(other)) return false;
+        if (!(other instanceof ArrayEncodingTransformer)) return false;
+        return this.itemTransformer.equals(other.itemTransformer);
     }
 }
 
